@@ -11,5 +11,5 @@ node_attrs = {
 def execute(ctx, cmds):
     result = ctx.execute(cmds)
     if result.return_code:
-        fail(" ".join(cmds) + "failed: %s" %(result.stderr))
+        fail(" ".join(cmds) + "failed: %s\n***STDOUT\n%s)" %(result.stderr, result.stdout))
     return result

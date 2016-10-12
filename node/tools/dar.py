@@ -23,6 +23,7 @@
 """Deterministic archive manipulation library."""
 
 import argparse
+import hashlib
 import os
 import os.path
 import subprocess
@@ -31,6 +32,12 @@ import tarfile
 import tempfile
 
 from StringIO import StringIO
+
+def sha256(file, block_size=65536):
+  sha256 = hashlib.sha256()
+  for block in iter(lambda: file.read(block_size), b''):
+    sha256.update(block)
+  return sha256.hexdigest()
 
 
 class SimpleArFile(object):
@@ -115,19 +122,19 @@ class TarFileWriter(object):
     pass
 
   def __init__(self, name, compression=''):
-    print("tarfile name %s" % name)
+    #print("tarfile name %s" % name)
     if compression in ['tgz', 'gz']:
       mode = 'w:gz'
     elif compression in ['bzip2', 'bz2']:
       mode = 'w:bz2'
     else:
       mode = 'w:'
-    print("tarfile mode %s" % mode)
+    #print("tarfile mode %s" % mode)
     # Support xz compression through xz... until we can use Py3
     self.xz = compression in ['xz', 'lzma']
     self.name = name
+    self.manifest = os.open(name+'.manifest', os.O_RDWR|os.O_CREAT)
     self.tar = tarfile.open(name=name, mode=mode)
-    #self.tar = tarfile.open(name="foo", mode='w:')
     self.members = set([])
     self.directories = set([])
 
@@ -210,6 +217,7 @@ class TarFileWriter(object):
       # Enforce the ending / for directories so we correctly deduplicate.
       info.name += '/'
     if info.name not in self.members:
+      print("Adding " + info.name)
       self.tar.addfile(info, fileobj)
       self.members.add(info.name)
     elif info.type != tarfile.DIRTYPE:
@@ -283,6 +291,8 @@ class TarFileWriter(object):
       tarinfo.size = len(content)
       self._addfile(tarinfo, StringIO(content))
     elif file_content:
+      with open(file_content, 'rb') as f:
+        os.write(self.manifest, "%s %s\n" % (sha256(f), file_content))
       with open(file_content, 'rb') as f:
         tarinfo.size = os.fstat(f.fileno()).st_size
         self._addfile(tarinfo, f)
@@ -395,6 +405,7 @@ class TarFileWriter(object):
     Raises:
       TarFileWriter.Error: if an error happens when compressing the output file.
     """
+    os.close(self.manifest)
     self.tar.close()
     if self.xz:
       # Support xz compression through xz... until we can use Py3
