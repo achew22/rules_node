@@ -1,17 +1,9 @@
 _js_filetype = FileType([".js"])
 _modules_filetype = FileType(["node_modules"])
 
-def _get_node_modules_dir(file, include_node_modules = True):
-    filename = str(file)
-    parts = filename.split("]")
-    prefix = parts[0][len("Artifact:[["):]
-    middle = parts[1]
-    suffix = parts[2].split("/")
-    components = [prefix, middle] + suffix[0:-1]
-    if include_node_modules:
-        components.append("node_modules")
-    d = "/".join(components)
-    return d
+def _get_path_relative(base, file):
+    prefix = "../" * len(base.split('/'))
+    return prefix + file.path
 
 
 def _get_lib_name(ctx):
@@ -24,17 +16,15 @@ def _get_lib_name(ctx):
     return "-".join(parts)
 
 
-def _copy_to_namespace(base, file):
-    steps = []
-    src = file.path
-    dst = file.basename
-    short_parts = file.short_path.split('/')
-    if short_parts:
-        dst_dir = "/".join(short_parts[0:-1])
-        dst = dst_dir + "/" + dst
-        steps.append("mkdir -p %s/%s" % (base, dst_dir))
-    steps.append("cp -f %s %s/%s" % (src, base, dst))
-    return steps
+def _copy_to_stage(ctx, stage, file):
+    outfile = ctx.new_file(stage + "/" + file.short_path)
+    ctx.action(
+        command = "cp $1 $2",
+        arguments = [file.path, outfile.path],
+        inputs = [file],
+        outputs = [outfile],
+    )
+    return outfile
 
 
 def node_library_impl(ctx):
@@ -43,7 +33,7 @@ def node_library_impl(ctx):
     modules = ctx.attr.modules
 
     lib_name = _get_lib_name(ctx)
-    stage_name = lib_name + ".npmfiles"
+    stage = lib_name + ".stage"
 
     srcs = ctx.files.srcs
     script = ctx.file.main
@@ -51,16 +41,11 @@ def node_library_impl(ctx):
         script = srcs[0]
 
     package_json_template_file = ctx.file.package_json_template_file
-    package_json_file = ctx.new_file(stage_name + "/package.json")
+    package_json_file = ctx.new_file(stage + "/package.json")
     npm_package_json_file = ctx.new_file("lib/node_modules/%s/package.json" % lib_name)
 
     transitive_srcs = []
     transitive_node_modules = []
-
-    files = []
-    for d in ctx.attr.data:
-        for file in d.files:
-            files.append(file)
 
     for dep in ctx.attr.deps:
         lib = dep.node_library
@@ -78,38 +63,33 @@ def node_library_impl(ctx):
         },
     )
 
-    npm_prefix_parts = _get_node_modules_dir(package_json_file, False).split("/")
-    npm_prefix = "/".join(npm_prefix_parts[0:-1])
-    staging_dir = "/".join([npm_prefix, stage_name])
+    staged = []
+    if script:
+        staged.append(_copy_to_stage(ctx, stage, script))
+    for src in srcs:
+        staged.append(_copy_to_stage(ctx, stage, src))
+    for d in ctx.attr.data:
+        for file in d.files:
+            staged.append(_copy_to_stage(ctx, stage, file))
 
     cmds = []
-    cmds += ["mkdir -p %s" % staging_dir]
-
-    if script:
-        cmds += _copy_to_namespace(staging_dir, script)
-    for src in srcs:
-        cmds += _copy_to_namespace(staging_dir, src)
-    for file in files:
-        cmds += _copy_to_namespace(staging_dir, file)
-
-    install_cmd = [
-        node.path,
-        npm.path,
+    cmds.append("cd %s" % package_json_file.dirname)
+    cmds.append(" ".join([
+        _get_path_relative(package_json_file.dirname, node),
+        _get_path_relative(package_json_file.dirname, npm),
         "install",
-        #"--verbose",
-        "--global", # remember you need --global + --prefix
+        "--global",
         "--prefix",
-        npm_prefix,
-    ]
+        "..",
+        #npm_package_json_file.dirname,
+    ]))
+    cmds.append("rm -rf %s" % package_json_file.dirname)
 
-    install_cmd.append(staging_dir)
-    cmds.append(" ".join(install_cmd))
-
-    #print("cmds: \n%s" % "\n".join(cmds))
+    inputs = [node, npm, package_json_file] + staged
 
     ctx.action(
         mnemonic = "NpmInstallLocal",
-        inputs = [node, npm, package_json_file] + srcs,
+        inputs = inputs,
         outputs = [npm_package_json_file],
         command = " && ".join(cmds),
     )
