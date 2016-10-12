@@ -68,7 +68,7 @@ def mocha_test_impl(ctx):
     for dep in ctx.attr.deps:
         lib = dep.node_library
         srcs += lib.transitive_srcs
-        inputs += [lib.package_json, lib.npm_package_json]
+        inputs += [lib.package_json]
         node_paths += [_get_node_modules_dir_from_package_json(lib.package_json)]
         for file in lib.transitive_node_modules:
             node_paths += [file.path]

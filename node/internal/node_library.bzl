@@ -1,11 +1,6 @@
 _js_filetype = FileType([".js"])
 _modules_filetype = FileType(["node_modules"])
 
-def _get_path_relative(base, file):
-    prefix = "../" * len(base.split('/'))
-    return prefix + file.path
-
-
 def _get_lib_name(ctx):
     name = ctx.label.name
     parts = ctx.label.package.split("/")
@@ -16,8 +11,8 @@ def _get_lib_name(ctx):
     return "-".join(parts)
 
 
-def _copy_to_stage(ctx, stage, file):
-    outfile = ctx.new_file(stage + "/" + file.short_path)
+def _copy_to_node_modules(ctx, node_modules, file):
+    outfile = ctx.new_file(node_modules + "/" + file.short_path)
     ctx.action(
         command = "cp $1 $2",
         arguments = [file.path, outfile.path],
@@ -28,21 +23,17 @@ def _copy_to_stage(ctx, stage, file):
 
 
 def node_library_impl(ctx):
-    node = ctx.executable._node
-    npm = ctx.executable._npm
-    modules = ctx.attr.modules
 
+    modules = ctx.attr.modules
     lib_name = _get_lib_name(ctx)
-    stage = lib_name + ".stage"
+    node_modules = "lib/node_modules/" + lib_name
 
     srcs = ctx.files.srcs
     script = ctx.file.main
     if not script and len(srcs) > 0:
         script = srcs[0]
 
-    package_json_template_file = ctx.file.package_json_template_file
-    package_json_file = ctx.new_file(stage + "/package.json")
-    npm_package_json_file = ctx.new_file("lib/node_modules/%s/package.json" % lib_name)
+    package_json_file = ctx.new_file(node_modules + "/package.json")
 
     transitive_srcs = []
     transitive_node_modules = []
@@ -52,62 +43,47 @@ def node_library_impl(ctx):
         transitive_srcs += lib.transitive_srcs
         transitive_node_modules += lib.transitive_node_modules
 
-    ctx.template_action(
-        template = package_json_template_file,
+    json = {
+        "name": lib_name,
+        "main": script.short_path if script else "",
+        "version": ctx.attr.version,
+        "description": ctx.attr.d,
+        "keywords": ctx.attr.keywords,
+        "homepage": ctx.attr.homepage,
+        "bugs": ctx.attr.bugs,
+        "license": ctx.attr.license,
+        "author": struct(**ctx.attr.author),
+        "dependencies": struct(),
+    }
+
+    ctx.file_action(
         output = package_json_file,
-        substitutions = {
-            "%{name}": lib_name,
-            "%{main}": script.short_path if script else "",
-            "%{version}": ctx.attr.version,
-            "%{description}": ctx.attr.d,
-        },
+        content = struct(**json).to_json(),
     )
 
-    staged = []
+    module_files = []
+    data_files = [],
     if script:
-        staged.append(_copy_to_stage(ctx, stage, script))
+        module_files.append(_copy_to_node_modules(ctx, node_modules, script))
     for src in srcs:
-        staged.append(_copy_to_stage(ctx, stage, src))
+        module_files.append(_copy_to_node_modules(ctx, node_modules, src))
     for d in ctx.attr.data:
         for file in d.files:
-            staged.append(_copy_to_stage(ctx, stage, file))
-
-    cmds = []
-    cmds.append("cd %s" % package_json_file.dirname)
-    cmds.append(" ".join([
-        _get_path_relative(package_json_file.dirname, node),
-        _get_path_relative(package_json_file.dirname, npm),
-        "install",
-        "--global",
-        "--prefix",
-        "..",
-        #npm_package_json_file.dirname,
-    ]))
-    cmds.append("rm -rf %s" % package_json_file.dirname)
-
-    inputs = [node, npm, package_json_file] + staged
-
-    ctx.action(
-        mnemonic = "NpmInstallLocal",
-        inputs = inputs,
-        outputs = [npm_package_json_file],
-        command = " && ".join(cmds),
-    )
+            module_files.append(_copy_to_node_modules(ctx, node_modules, file))
 
     return struct(
-        files = set(srcs),
+        files = set(module_files),
         runfiles = ctx.runfiles(
-            files = srcs,
-            collect_default = True,
+            files = module_files,
+            collect_default = False,
         ),
         node_library = struct(
             name = lib_name,
             label = ctx.label,
-            srcs = srcs,
-            transitive_srcs = srcs + transitive_srcs,
+            srcs = module_files,
+            transitive_srcs = module_files + transitive_srcs,
             transitive_node_modules = ctx.files.modules + transitive_node_modules,
-            package_json = npm_package_json_file,
-            npm_package_json = npm_package_json_file,
+            package_json = package_json_file,
         ),
     )
 
@@ -128,6 +104,12 @@ node_library = rule(
         "d": attr.string(
             default = "No description provided.",
         ),
+        "keywords": attr.string_list(),
+        "homepage": attr.string(),
+        "bugs": attr.string(),
+        "license": attr.string(),
+        "author": attr.string_dict(),
+        "bin": attr.string_dict(),
         "data": attr.label_list(
             allow_files = True,
             cfg = "data",
@@ -138,26 +120,7 @@ node_library = rule(
         "modules": attr.label_list(
             allow_files = _modules_filetype,
         ),
-        "package_json_template_file": attr.label(
-            single_file = True,
-            allow_files = True,
-            default = Label("//node:package.json.tpl"),
-        ),
         "prefix": attr.string(default = "workspace"),
         "use_prefix": attr.bool(default = False),
-        "_node": attr.label(
-            default = Label("@org_pubref_rules_node_toolchain//:node_tool"),
-            single_file = True,
-            allow_files = True,
-            executable = True,
-            cfg = "host",
-        ),
-        "_npm": attr.label(
-            default = Label("@org_pubref_rules_node_toolchain//:npm_tool"),
-            single_file = True,
-            allow_files = True,
-            executable = True,
-            cfg = "host",
-        ),
     },
 )
