@@ -295,6 +295,8 @@ class TarFileWriter(object):
         os.write(self.manifest, "%s %s\n" % (sha256(f), file_content))
       with open(file_content, 'rb') as f:
         tarinfo.size = os.fstat(f.fileno()).st_size
+        if "license" in file_content:
+          print("tarinfo: %s" % tarinfo)
         self._addfile(tarinfo, f)
     else:
       if kind == tarfile.DIRTYPE:
